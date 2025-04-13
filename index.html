@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Whiteboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+        }
+        
+        .draggable {
+            cursor: move;
+            user-select: none;
+        }
+        
+        .note {
+            position: absolute;
+            min-width: 150px;
+            min-height: 100px;
+            padding: 10px;
+            background: #ffd;
+            box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+            border-radius: 6px;
+        }
+        
+        .image-container {
+            position: absolute;
+            max-width: 300px;
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+        }
+        
+        .image-container img {
+            width: 100%;
+            height: auto;
+        }
+
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+
+        .section-indicator {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            z-index: 100;
+        }
+
+        /* Mobile responsive styles */
+        @media (max-width: 640px) {
+            .toolbar {
+                flex-direction: column;
+                width: 100%;
+                padding: 8px;
+            }
+            
+            .toolbar > div {
+                width: 100%;
+                margin-bottom: 8px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-blue-50 min-h-screen">
+    <div id="app" class="container mx-auto p-4">
+        <!-- Session Management -->
+        <div v-if="!sessionId" class="flex flex-col items-center justify-center min-h-[80vh] space-y-8">
+            <div class="text-center">
+                <h1 class="text-4xl font-bold text-blue-600 mb-4">Collaborative Whiteboard</h1>
+                <p class="text-gray-600 mb-8">Create a new session or join an existing one</p>
+            </div>
+            <div class="space-y-4 w-full max-w-md">
+                <button @click="createSession" class="w-full bg-blue-500 text-white py-3 px-6 rounded-lg hover:bg-blue-600 transition-colors shadow-lg flex items-center justify-center space-x-2">
+                    <i class="bi bi-plus-circle"></i>
+                    <span>Create New Session</span>
+                </button>
+                <div class="flex space-x-2">
+                    <input v-model="joinSessionId" type="text" placeholder="Enter Session ID" 
+                           class="flex-1 border p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 shadow">
+                    <button @click="joinSession" class="bg-green-500 text-white py-2 px-6 rounded-lg hover:bg-green-600 transition-colors shadow-lg flex items-center space-x-2">
+                        <i class="bi bi-box-arrow-in-right"></i>
+                        <span>Join</span>
+                    </button>
+                </div>
+                <p v-if="connectionError" class="text-red-500 text-center">{{ connectionError }}</p>
+            </div>
+        </div>
+
+        <!-- Whiteboard -->
+        <div v-else class="relative min-h-screen">
+            <div class="fixed top-4 left-4 right-4 z-10 bg-white p-4 rounded-lg shadow-lg toolbar sm:flex sm:justify-between">
+                <div class="flex items-center space-x-2 mb-3 sm:mb-0">
+                    <div class="user-avatar bg-blue-500">
+                        {{ userInitial }}
+                    </div>
+                    <p class="text-sm text-gray-600 flex-1">Session ID: <span class="font-mono text-blue-600 select-all">{{ sessionId }}</span></p>
+                    <button @click="copySessionId" class="text-blue-500 hover:text-blue-700">
+                        <i class="bi bi-clipboard"></i>
+                    </button>
+                </div>
+                <div class="flex space-x-2 sm:justify-end">
+                    <button @click="setActiveSection('text')" 
+                            :class="{'bg-yellow-500 hover:bg-yellow-600': activeSection === 'text', 
+                                    'bg-gray-300 hover:bg-gray-400': activeSection !== 'text'}"
+                            class="text-white py-2 px-4 rounded transition-colors">
+                        <i class="bi bi-sticky"></i> Text
+                    </button>
+                    <button @click="setActiveSection('media')"
+                            :class="{'bg-purple-500 hover:bg-purple-600': activeSection === 'media', 
+                                    'bg-gray-300 hover:bg-gray-400': activeSection !== 'media'}"
+                            class="text-white py-2 px-4 rounded transition-colors">
+                        <i class="bi bi-image"></i> Media
+                    </button>
+                    <label v-if="activeSection === 'media'" class="bg-indigo-500 text-white py-2 px-4 rounded hover:bg-indigo-600 cursor-pointer">
+                        <i class="bi bi-upload"></i> Upload
+                        <input type="file" class="hidden" @change="handleImageUpload" accept="image/*,application/pdf,application/msword">
+                    </label>
+                </div>
+            </div>
+
+            <!-- Section indicator -->
+            <div class="section-indicator py-2 px-6">
+                <p class="text-sm font-medium">
+                    <i :class="activeSection === 'text' ? 'bi bi-sticky' : 'bi bi-image'"></i>
+                    {{ activeSection === 'text' ? 'Text Mode: Click anywhere to add text' : 'Media Mode: Upload files to add' }}
+                </p>
+            </div>
+
+            <!-- Notes and Images -->
+            <div id="whiteboard" class="relative w-full h-full mt-24" 
+                 @click="handleWhiteboardClick"
+                 @mousedown="startDrag" 
+                 @mousemove="drag" 
+                 @mouseup="stopDrag" 
+                 @mouseleave="stopDrag"
+                 @touchstart="handleTouchStart"
+                 @touchmove="handleTouchMove"
+                 @touchend="handleTouchEnd">
+                <div v-for="note in notes" :key="note.id" 
+                     :style="{left: note.x + 'px', top: note.y + 'px'}"
+                     class="note draggable" :data-id="note.id">
+                    <textarea v-model="note.text" @input="updateNote(note)"
+                              class="w-full h-full bg-transparent border-none resize-none focus:outline-none"></textarea>
+                </div>
+
+                <div v-for="img in images" :key="img.id"
+                     :style="{left: img.x + 'px', top: img.y + 'px'}"
+                     class="image-container draggable" :data-id="img.id">
+                    <div class="bg-white p-2 text-sm text-gray-500 flex justify-between items-center">
+                        <span class="truncate max-w-[200px]">{{ getFilename(img.url) }}</span>
+                        <button @click="removeImage(img.id)" class="text-red-500 hover:text-red-700">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
+                    <img v-if="isImage(img.url)" :src="img.url" alt="Uploaded content">
+                    <div v-else class="bg-gray-100 p-4 flex items-center justify-center">
+                        <i class="bi bi-file-earmark-text text-4xl text-gray-500"></i>
+                        <a :href="img.url" target="_blank" class="ml-2 text-blue-500 hover:underline">View Document</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connection status indicator -->
+            <div class="fixed bottom-4 right-4 z-10 bg-white p-2 rounded-full shadow flex items-center space-x-2">
+                <div :class="connected ? 'bg-green-500' : 'bg-red-500'" class="w-3 h-3 rounded-full"></div>
+                <span class="text-sm">{{ connected ? 'Connected' : 'Disconnected' }}</span>
+            </div>
+        </div>
+
+        <!-- Notification for copied session ID -->
+        <div v-if="showCopyNotification" class="fixed bottom-20 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-70 text-white px-4 py-2 rounded-lg">
+            Session ID copied to clipboard
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue
+        
+        createApp({
+            data() {
+                return {
+                    userName: "User" + Math.floor(Math.random() * 1000),
+                    sessionId: '',
+                    joinSessionId: '',
+                    notes: [],
+                    images: [],
+                    socket: null,
+                    draggedItem: null,
+                    offset: { x: 0, y: 0 },
+                    activeSection: 'text', // Default to text section
+                    connected: false,
+                    connectionError: '',
+                    showCopyNotification: false,
+                    reconnectAttempts: 0,
+                    maxReconnectAttempts: 5
+                }
+            },
+            computed: {
+                userInitial() {
+                    return this.userName.charAt(0).toUpperCase();
+                }
+            },
+            methods: {
+                createSession() {
+                    this.sessionId = Math.random().toString(36).substring(2, 15);
+                    this.initializeSocket();
+                },
+                joinSession() {
+                    if (this.joinSessionId) {
+                        this.sessionId = this.joinSessionId;
+                        this.initializeSocket();
+                    }
+                },
+                initializeSocket() {
+                    // Mock socket connection for demo purposes
+                    this.connected = false;
+                    
+                    // For this demo, we'll use local storage to simulate server
+                    // Subscribe to localStorage changes to simulate socket.io
+                    window.addEventListener('storage', this.handleStorageChange);
+                    
+                    // Simulate connection
+                    setTimeout(() => {
+                        this.connected = true;
+                        this.loadFromStorage();
+                        
+                        // Initial broadcast to signal others
+                        this.broadcastPresence();
+                    }, 1000);
+                },
+                handleStorageChange(event) {
+                    if (event.key === `whiteboard-${this.sessionId}`) {
+                        this.loadFromStorage();
+                    }
+                },
+                broadcastPresence() {
+                    // Simulate broadcasting presence to peers
+                    const presenceKey = `presence-${this.sessionId}`;
+                    const presenceData = JSON.stringify({
+                        user: this.userName,
+                        timestamp: Date.now()
+                    });
+                    localStorage.setItem(presenceKey, presenceData);
+                    
+                    // This would trigger other tabs to update their view
+                    // Ask for current state
+                    this.loadFromStorage();
+                },
+                loadFromStorage() {
+                    const savedData = localStorage.getItem(`whiteboard-${this.sessionId}`);
+                    if (savedData) {
+                        const data = JSON.parse(savedData);
+                        this.notes = data.notes || [];
+                        this.images = data.images || [];
+                    }
+                },
+                saveToStorage() {
+                    const data = JSON.stringify({
+                        notes: this.notes,
+                        images: this.images,
+                        lastUpdated: Date.now(),
+                        updatedBy: this.userName
+                    });
+                    localStorage.setItem(`whiteboard-${this.sessionId}`, data);
+                },
+                setActiveSection(section) {
+                    this.activeSection = section;
+                },
+                addNote(x = 100, y = 100) {
+                    if (this.activeSection !== 'text') return;
+                    
+                    const note = {
+                        id: Date.now(),
+                        text: '',
+                        x: x,
+                        y: y
+                    };
+                    this.notes.push(note);
+                    this.saveToStorage();
+                },
+                updateNote(note) {
+                    this.saveToStorage();
+                },
+                removeNote(id) {
+                    this.notes = this.notes.filter(note => note.id !== id);
+                    this.saveToStorage();
+                },
+                removeImage(id) {
+                    this.images = this.images.filter(img => img.id !== id);
+                    this.saveToStorage();
+                },
+                handleWhiteboardClick(e) {
+                    // Only add note if clicking directly on whiteboard (not on a note or image)
+                    if (e.target.id === 'whiteboard' && this.activeSection === 'text') {
+                        // Get position relative to whiteboard
+                        const rect = e.target.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const y = e.clientY - rect.top;
+                        
+                        this.addNote(x, y);
+                    }
+                },
+                async handleImageUpload(event) {
+                    if (this.activeSection !== 'media') return;
+                    
+                    const file = event.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            const img = {
+                                id: Date.now(),
+                                url: e.target.result,
+                                name: file.name,
+                                type: file.type,
+                                x: 100,
+                                y: 100
+                            };
+                            this.images.push(img);
+                            this.saveToStorage();
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                },
+                getFilename(url) {
+                    // Extract filename from data URL or use generic name
+                    const fileType = this.getFileType(url);
+                    return fileType === 'image' ? 'Image' : 'Document';
+                },
+                isImage(url) {
+                    return url.startsWith('data:image/');
+                },
+                getFileType(url) {
+                    if (url.startsWith('data:image/')) return 'image';
+                    if (url.startsWith('data:application/pdf')) return 'pdf';
+                    if (url.startsWith('data:application/msword') || 
+                        url.startsWith('data:application/vnd.openxmlformats-officedocument.wordprocessingml.document')) 
+                        return 'word';
+                    return 'unknown';
+                },
+                startDrag(e) {
+                    const element = e.target.closest('.draggable');
+                    if (!element) return;
+
+                    this.draggedItem = element;
+                    const rect = element.getBoundingClientRect();
+                    this.offset = {
+                        x: e.clientX - rect.left,
+                        y: e.clientY - rect.top
+                    };
+                },
+                drag(e) {
+                    if (!this.draggedItem) return;
+
+                    const id = this.draggedItem.dataset.id;
+                    const x = e.clientX - this.offset.x;
+                    const y = e.clientY - this.offset.y;
+
+                    const item = [...this.notes, ...this.images].find(item => item.id == id);
+                    if (item) {
+                        item.x = x;
+                        item.y = y;
+                        this.saveToStorage();
+                    }
+                },
+                stopDrag() {
+                    this.draggedItem = null;
+                },
+                // Touch support for mobile
+                handleTouchStart(e) {
+                    if (e.touches.length === 1) {
+                        const touch = e.touches[0];
+                        const mouseEvent = new MouseEvent('mousedown', {
+                            clientX: touch.clientX,
+                            clientY: touch.clientY
+                        });
+                        this.startDrag(mouseEvent);
+                    }
+                },
+                handleTouchMove(e) {
+                    if (e.touches.length === 1) {
+                        const touch = e.touches[0];
+                        const mouseEvent = new MouseEvent('mousemove', {
+                            clientX: touch.clientX,
+                            clientY: touch.clientY
+                        });
+                        this.drag(mouseEvent);
+                        
+                        // Prevent scrolling when dragging
+                        if (this.draggedItem) {
+                            e.preventDefault();
+                        }
+                    }
+                },
+                handleTouchEnd() {
+                    this.stopDrag();
+                },
+                copySessionId() {
+                    navigator.clipboard.writeText(this.sessionId)
+                        .then(() => {
+                            this.showCopyNotification = true;
+                            setTimeout(() => {
+                                this.showCopyNotification = false;
+                            }, 2000);
+                        })
+                        .catch(err => {
+                            console.error('Failed to copy session ID: ', err);
+                        });
+                },
+                attemptReconnect() {
+                    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                        this.reconnectAttempts++;
+                        setTimeout(() => {
+                            this.initializeSocket();
+                        }, 2000 * this.reconnectAttempts);
+                    }
+                }
+            },
+            mounted() {
+                // Poll for changes every few seconds to handle sync across tabs
+                this.pollInterval = setInterval(() => {
+                    if (this.sessionId) {
+                        this.loadFromStorage();
+                    }
+                }, 2000);
+            },
+            beforeUnmount() {
+                clearInterval(this.pollInterval);
+                window.removeEventListener('storage', this.handleStorageChange);
+            }
+        }).mount('#app');
+    </script>
+<script>document.body.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); return }, { passive: false })</script>
+	</body>
+</html>
